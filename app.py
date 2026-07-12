@@ -56,7 +56,7 @@ st.markdown(
     <style>
     .stApp{{background:{SOFT_PINK}}}
     [data-testid="stSidebar"]{{
-        background:linear-gradient(180deg,#FCE7F3 0%,#FDF2F8 55%,#FFF 100%);
+        background:#FFFFFF;
         border-right:1px solid #FBCFE8
     }}
     [data-testid="stMetric"]{{
@@ -85,6 +85,51 @@ st.markdown(
     .warning-note{{background:#FFFBEB;border-left:5px solid #F59E0B}}
     .stButton>button,.stDownloadButton>button{{
         border-radius:12px;border:1px solid {PINK}
+    }}
+    [data-testid="stSidebar"] [data-testid="stSidebarContent"]{{
+        padding-left:.45rem!important;
+        padding-right:.45rem!important;
+        padding-top:.80rem!important
+    }}
+    [data-testid="stSidebar"] [data-testid="stVerticalBlock"]{{
+        gap:.22rem!important
+    }}
+    [data-testid="stSidebar"] .stButton{{
+        width:100%!important;
+        margin:0!important;
+        padding:0!important
+    }}
+    [data-testid="stSidebar"] .stButton > button{{
+        width:100%!important;
+        display:flex!important;
+        align-items:center!important;
+        justify-content:flex-start!important;
+        text-align:left!important;
+        padding:.78rem .95rem!important;
+        margin:0 0 .38rem 0!important;
+        background:#FDF2F8!important;
+        color:#9D174D!important;
+        border:1px solid #FBCFE8!important;
+        border-radius:14px!important;
+        box-shadow:none!important;
+    }}
+    [data-testid="stSidebar"] .stButton > button:hover{{
+        background:#FCE7F3!important;
+        color:#831843!important;
+        border-color:#EC4899!important;
+    }}
+    [data-testid="stSidebar"] .stButton > button:focus{{
+        box-shadow:none!important;
+        border-color:#EC4899!important;
+    }}
+    [data-testid="stSidebar"] .stButton > button p,
+    [data-testid="stSidebar"] .stButton > button span,
+    [data-testid="stSidebar"] .stButton > button div{{
+        width:100%!important;
+        margin:0!important;
+        text-align:left!important;
+        justify-content:flex-start!important;
+        align-items:center!important;
     }}
     </style>
     """,
@@ -379,28 +424,7 @@ def dashboard_page(df: pd.DataFrame) -> None:
         "🏥 Healthcare Analytics Dashboard",
         "Ringkasan data pasien, visualisasi operasional, insight, dan rekomendasi.",
     )
-    st.sidebar.markdown("### Filter Dashboard")
-    genders = st.sidebar.multiselect(
-        "Gender", sorted(df["Gender"].unique()), default=sorted(df["Gender"].unique())
-    )
-    conditions = st.sidebar.multiselect(
-        "Kondisi medis",
-        sorted(df["Medical Condition"].unique()),
-        default=sorted(df["Medical Condition"].unique()),
-    )
-    years = st.sidebar.multiselect(
-        "Tahun admisi",
-        sorted(df["Admission Year"].unique()),
-        default=sorted(df["Admission Year"].unique()),
-    )
-    data = df[
-        df["Gender"].isin(genders)
-        & df["Medical Condition"].isin(conditions)
-        & df["Admission Year"].isin(years)
-    ].copy()
-    if data.empty:
-        st.warning("Tidak ada data pada filter yang dipilih.")
-        return
+    data = df.copy()
 
     c1, c2, c3, c4 = st.columns(4)
     c1.metric("Total pasien", f"{len(data):,}")
@@ -410,16 +434,16 @@ def dashboard_page(df: pd.DataFrame) -> None:
     c4.metric("Hasil tes abnormal", f"{abnormal:.1f}%")
 
     section("Visualisasi Utama")
+    trend = data.groupby("Admission Year").size().reset_index(name="Jumlah Pasien")
+    fig = px.line(
+        trend, x="Admission Year", y="Jumlah Pasien",
+        markers=True, color_discrete_sequence=[PINK],
+    )
+    fig.update_traces(line=dict(width=3), fill="tozeroy")
+    chart("Tren jumlah pasien per tahun", fig)
+
     left, right = st.columns(2, gap="large")
     with left:
-        trend = data.groupby("Admission Year").size().reset_index(name="Jumlah Pasien")
-        fig = px.line(
-            trend, x="Admission Year", y="Jumlah Pasien",
-            markers=True, color_discrete_sequence=[PINK],
-        )
-        fig.update_traces(line=dict(width=3), fill="tozeroy")
-        chart("Tren jumlah pasien per tahun", fig)
-    with right:
         counts = data["Medical Condition"].value_counts().reset_index()
         counts.columns = ["Kondisi Medis", "Jumlah Pasien"]
         fig = px.bar(
@@ -429,9 +453,7 @@ def dashboard_page(df: pd.DataFrame) -> None:
         fig.update_traces(textposition="outside")
         fig.update_layout(showlegend=False)
         chart("Jumlah pasien berdasarkan kondisi medis", fig)
-
-    left, right = st.columns(2, gap="large")
-    with left:
+    with right:
         insurers = data["Insurance Provider"].value_counts().reset_index()
         insurers.columns = ["Provider", "Jumlah Pasien"]
         fig = px.pie(
@@ -441,19 +463,6 @@ def dashboard_page(df: pd.DataFrame) -> None:
         fig.update_traces(textinfo="percent+label")
         fig.update_layout(showlegend=False)
         chart("Proporsi pasien berdasarkan provider asuransi", fig)
-    with right:
-        costs = (
-            data.groupby("Medical Condition")["Billing Amount"]
-            .mean().reset_index().sort_values("Billing Amount")
-        )
-        fig = px.bar(
-            costs, x="Billing Amount", y="Medical Condition", orientation="h",
-            text=costs["Billing Amount"].map(lambda x: f"${x:,.0f}"),
-            color="Medical Condition", color_discrete_sequence=COLORS,
-        )
-        fig.update_layout(showlegend=False)
-        fig.update_traces(textposition="outside")
-        chart("Rata-rata biaya berdasarkan kondisi medis", fig)
 
     top_condition = data["Medical Condition"].value_counts().idxmax()
     top_insurer = data["Insurance Provider"].value_counts().idxmax()
@@ -474,7 +483,6 @@ def dashboard_page(df: pd.DataFrame) -> None:
             "Gunakan tren pasien untuk perencanaan kapasitas tempat tidur.",
             "Pantau kelompok biaya tinggi melalui klasifikasi dan clustering.",
         ])
-    st.dataframe(data.head(25), use_container_width=True, hide_index=True)
 
 def regression_page(df: pd.DataFrame) -> None:
     hero(
@@ -488,11 +496,6 @@ def regression_page(df: pd.DataFrame) -> None:
     c1.metric("MAE", usd(m["MAE"]))
     c2.metric("RMSE", usd(m["RMSE"]))
     c3.metric("R²", f"{m['R2']:.3f}")
-    if m["R2"] < .20:
-        block("warning-note", "Catatan model", [
-            "Nilai R² rendah menunjukkan variasi biaya sulit dijelaskan dari kolom yang tersedia.",
-            "Gunakan hasil sebagai estimasi awal, bukan keputusan finansial final.",
-        ])
 
     section("Uji Prediksi Pasien")
     row, submitted = patient_form(df, "reg")
@@ -694,12 +697,6 @@ def clustering_page(df: pd.DataFrame) -> None:
     c2.metric("Silhouette score", f"{result['silhouette']:.3f}")
     c3.metric("Pasien dianalisis", f"{len(clustered):,}")
     c4.metric("Variansi PCA 2D", f"{result['variance']:.1%}")
-    if result["silhouette"] < .30:
-        block("warning-note", "Catatan cluster", [
-            "Batas antar-cluster masih berdekatan.",
-            "Gunakan cluster sebagai eksplorasi, bukan kelompok klinis mutlak.",
-        ])
-
     section("Visualisasi Segmentasi")
     sample = clustered.sample(min(5000, len(clustered)), random_state=42)
     left, right = st.columns(2)
@@ -760,12 +757,20 @@ def clustering_page(df: pd.DataFrame) -> None:
 
 def main() -> None:
     df = get_data()
-    st.sidebar.markdown("## 🏥 Healthcare BI")
-    st.sidebar.caption("Healthcare Data Mining Dashboard")
-    menu = st.sidebar.radio(
-        "Menu",
-        ["Dashboard Utama", "Regresi Biaya", "Klasifikasi Risiko", "Clustering Pasien"],
-    )
+
+    if "menu" not in st.session_state:
+        st.session_state.menu = "Dashboard Utama"
+
+    for value in [
+        "Dashboard Utama",
+        "Regresi Biaya",
+        "Klasifikasi Risiko",
+        "Clustering Pasien",
+    ]:
+        if st.sidebar.button(value, key=f"menu_{value}", use_container_width=True):
+            st.session_state.menu = value
+
+    menu = st.session_state.menu
     if menu == "Dashboard Utama":
         dashboard_page(df)
     elif menu == "Regresi Biaya":
