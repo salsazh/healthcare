@@ -183,6 +183,7 @@ def load_data(path: str, mtime: float) -> pd.DataFrame:
         df[c] = df[c].astype(str).str.strip()
     df = df.dropna(subset=MODEL_FEATURES + ["Billing Amount", "Admission Year"])
     df = df[(df["Billing Amount"] > 0) & (df["Length of Stay"] > 0)].copy()
+    df = df.drop_duplicates().copy()
     df["Age"] = df["Age"].astype(int)
     df["Length of Stay"] = df["Length of Stay"].astype(int)
     df["Admission Year"] = df["Admission Year"].astype(int)
@@ -228,18 +229,28 @@ def feature_importance(model: Pipeline) -> pd.DataFrame:
 
 @st.cache_resource(show_spinner=False)
 def regression_model(path: str, mtime: float) -> Dict[str, object]:
-    df = load_data(path, mtime).sample(min(8000, len(load_data(path, mtime))), random_state=42)
-    X, y = df[MODEL_FEATURES], df["Billing Amount"]
-    Xtr, Xte, ytr, yte = train_test_split(X, y, test_size=.2, random_state=42)
+    df = load_data(path, mtime)
+    X = df[MODEL_FEATURES]
+    y = df["Billing Amount"]
+
+    Xtr, Xte, ytr, yte = train_test_split(
+        X, y, test_size=.2, random_state=42
+    )
+
     model = Pipeline([
         ("prep", preprocessor()),
         ("model", RandomForestRegressor(
-            n_estimators=45, max_depth=11, min_samples_leaf=3,
-            random_state=42, n_jobs=1,
+            n_estimators=100,
+            max_depth=12,
+            min_samples_leaf=4,
+            random_state=42,
+            n_jobs=-1,
         )),
     ])
+
     model.fit(Xtr, ytr)
     pred = model.predict(Xte)
+
     return {
         "model": model,
         "metrics": {
@@ -247,7 +258,10 @@ def regression_model(path: str, mtime: float) -> Dict[str, object]:
             "RMSE": mean_squared_error(yte, pred) ** .5,
             "R2": r2_score(yte, pred),
         },
-        "eval": pd.DataFrame({"Aktual": yte.to_numpy(), "Prediksi": pred}),
+        "eval": pd.DataFrame({
+            "Aktual": yte.to_numpy(),
+            "Prediksi": pred,
+        }),
         "importance": feature_importance(model),
         "mean": float(y.mean()),
         "q25": float(y.quantile(.25)),
@@ -256,28 +270,35 @@ def regression_model(path: str, mtime: float) -> Dict[str, object]:
 
 @st.cache_resource(show_spinner=False)
 def classification_model(path: str, mtime: float) -> Dict[str, object]:
-    full = load_data(path, mtime)
-    cost_limit = float(full["Billing Amount"].quantile(.75))
-    stay_limit = float(full["Length of Stay"].quantile(.75))
-    df = full.sample(min(8000, len(full)), random_state=42)
-    target = (
-        (df["Billing Amount"] >= cost_limit)
-        | (df["Length of Stay"] >= stay_limit)
-    ).astype(int)
+    df = load_data(path, mtime)
+    cost_limit = float(df["Billing Amount"].quantile(.75))
+    target = (df["Billing Amount"] >= cost_limit).astype(int)
+
     Xtr, Xte, ytr, yte = train_test_split(
-        df[MODEL_FEATURES], target, test_size=.2, random_state=42, stratify=target
+        df[MODEL_FEATURES],
+        target,
+        test_size=.2,
+        random_state=42,
+        stratify=target,
     )
+
     model = Pipeline([
         ("prep", preprocessor()),
         ("model", RandomForestClassifier(
-            n_estimators=60, max_depth=11, min_samples_leaf=3,
-            class_weight="balanced", random_state=42, n_jobs=1,
+            n_estimators=120,
+            max_depth=12,
+            min_samples_leaf=4,
+            class_weight="balanced",
+            random_state=42,
+            n_jobs=-1,
         )),
     ])
+
     model.fit(Xtr, ytr)
     pred = model.predict(Xte)
     prob = model.predict_proba(Xte)[:, 1]
     fpr, tpr, _ = roc_curve(yte, prob)
+
     return {
         "model": model,
         "metrics": {
@@ -291,14 +312,24 @@ def classification_model(path: str, mtime: float) -> Dict[str, object]:
         "fpr": fpr,
         "tpr": tpr,
         "importance": feature_importance(model),
+        "cost_limit": cost_limit,
     }
 
 def cluster_label(summary: pd.DataFrame, column: str) -> pd.Series:
-    return pd.qcut(
-        summary[column].rank(method="first"),
-        3,
-        labels=["Rendah", "Sedang", "Tinggi"],
-    )
+    order = summary[column].rank(method="first")
+    total = len(summary)
+
+    if total == 2:
+        labels = np.where(order == order.min(), "Rendah", "Tinggi")
+    else:
+        percentile = order / total
+        labels = np.select(
+            [percentile <= 1 / 3, percentile > 2 / 3],
+            ["Rendah", "Tinggi"],
+            default="Sedang",
+        )
+
+    return pd.Series(labels, index=summary.index)
 
 def cluster_advice(cost: str, stay: str, age: str) -> str:
     if cost == "Tinggi" and stay == "Tinggi":
@@ -321,7 +352,7 @@ def clustering_result(path: str, mtime: float, k: int) -> Dict[str, object]:
     scaled = StandardScaler().fit_transform(df[CLUSTER_FEATURES])
     rng = np.random.default_rng(42)
     fit_idx = rng.choice(len(df), min(20000, len(df)), replace=False)
-    model = KMeans(n_clusters=k, n_init=10, random_state=42).fit(scaled[fit_idx])
+    model = KMeans(n_clusters=k, n_init=20, random_state=42).fit(scaled[fit_idx])
     labels = model.predict(scaled)
     df["Cluster"] = labels
     pca = PCA(n_components=2, random_state=42)
@@ -575,8 +606,8 @@ def regression_page(df: pd.DataFrame) -> None:
 
 def classification_page(df: pd.DataFrame) -> None:
     hero(
-        "🎯 Klasifikasi - Risiko Sumber Daya Tinggi",
-        "Klasifikasi pasien yang berpotensi membutuhkan biaya tinggi atau masa rawat panjang.",
+        "🎯 Klasifikasi - Risiko Biaya Tinggi",
+        "Klasifikasi pasien yang berpotensi memiliki biaya perawatan tinggi.",
     )
     result = classification_model(str(DATA_FILE), os.path.getmtime(DATA_FILE))
     m = result["metrics"]
@@ -595,8 +626,8 @@ def classification_page(df: pd.DataFrame) -> None:
     if submitted:
         probability = float(result["model"].predict_proba(row)[0, 1])
         label = (
-            "Risiko Sumber Daya Tinggi"
-            if probability >= .5 else "Risiko Sumber Daya Normal"
+            "Risiko Biaya Tinggi"
+            if probability >= .5 else "Risiko Biaya Normal"
         )
         c1, c2, c3 = st.columns(3)
         c1.metric("Hasil klasifikasi", label)
@@ -605,7 +636,7 @@ def classification_page(df: pd.DataFrame) -> None:
         gauge = go.Figure(go.Indicator(
             mode="gauge+number", value=probability * 100,
             number={"suffix": "%"},
-            title={"text": "Probabilitas Risiko Sumber Daya Tinggi"},
+            title={"text": "Probabilitas Risiko Biaya Tinggi"},
             gauge={
                 "axis": {"range": [0, 100]},
                 "bar": {"color": PINK},
@@ -622,7 +653,7 @@ def classification_page(df: pd.DataFrame) -> None:
         ))
         chart("Skor probabilitas", gauge, 330)
         if probability >= .70:
-            insight = "Pasien berada pada prioritas tinggi untuk pemantauan biaya dan kapasitas."
+            insight = "Pasien berada pada prioritas tinggi untuk pemantauan biaya perawatan."
             advice = [
                 "Lakukan verifikasi asuransi lebih awal.",
                 "Siapkan pengawasan biaya harian.",
@@ -635,7 +666,7 @@ def classification_page(df: pd.DataFrame) -> None:
                 "Perbarui estimasi biaya saat kondisi berubah.",
             ]
         else:
-            insight = "Risiko kebutuhan sumber daya tinggi relatif rendah."
+            insight = "Risiko biaya perawatan tinggi relatif rendah."
             advice = [
                 "Gunakan alur layanan standar.",
                 "Tetap lakukan pemeriksaan tagihan.",
